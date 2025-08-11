@@ -47,55 +47,59 @@ def get_datafiletype_id_from_filename(filename, filename_pattern):
 
 def insert_fileevent(server, database, sql_template_file_path, data_file_type_id, market_date, file_name, file_location):
     """
-    Create a fileevent row in database
+    Insert a new FileEvent row if it doesn't already exist.
     """
     conn_str = (
         f"DRIVER={{ODBC Driver 17 for SQL Server}};"
         f"SERVER={server};"
         f"DATABASE={database};"
         "Trusted_Connection=yes;"
-        "Encrypt=no;"  # or "yes" if your server requires it
+        "Encrypt=no;"
     )
-    
-    with open(sql_template_file_path, "r", encoding="utf-8") as file:
-        sql_query = file.read()
-
-    logger.info(f"Executing SQL: {sql_query}")
 
     MarketDate = date.fromisoformat(market_date)
     DataFileTypeId = int(data_file_type_id)
     FileName = file_name
     FileLocation = file_location
-    Step = 'Monitor'
-    StepRetryCount = 0
-    Status = 'Completed'
-    ServerName = 'DLSTAP202'
-    RecordCreationDate = datetime.now()
-    RecordModificationDate = datetime.now()
-    RecordModificationUser = "CRP FileEvent populator"
-    RecordSource = "CRP FileEvent populator"
-    RecordComment = ""
-    IsManual = True
-        
+
+    # Check for existing entry
+    check_sql = """
+        SELECT COUNT(*) FROM FileEvent
+        WHERE FileName = ? AND FileLocation = ? AND MarketDate = ? AND DataFileTypeId = ?
+    """
+
     with pyodbc.connect(conn_str) as conn:
         cursor = conn.cursor()
+        cursor.execute(check_sql, (FileName, FileLocation, MarketDate, DataFileTypeId))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            logger.info(f"⏩ Skipped existing entry: {FileName}")
+            return False  # Entry already exists
+
+        # Proceed with insert
+        with open(sql_template_file_path, "r", encoding="utf-8") as file:
+            sql_query = file.read()
+
+        logger.info(f"📝 Inserting new entry: {FileName}")
         cursor.execute(sql_query, (
-          MarketDate,
-          DataFileTypeId,
-          FileName,
-          FileLocation,
-          Step,
-          StepRetryCount,
-          Status,
-          ServerName,
-          RecordCreationDate,
-          RecordModificationDate,
-          RecordModificationUser,
-          RecordSource,
-          RecordComment,
-          IsManual
+            MarketDate,
+            DataFileTypeId,
+            FileName,
+            FileLocation,
+            'Monitor',
+            0,
+            'Completed',
+            'DLSTAP202',
+            datetime.now(),
+            datetime.now(),
+            "CRP FileEvent populator",
+            "CRP FileEvent populator",
+            "",
+            True
         ))
         conn.commit()
+        return True
 
     # try:
     #     with pyodbc.connect(conn_str) as conn:
@@ -107,11 +111,26 @@ def insert_fileevent(server, database, sql_template_file_path, data_file_type_id
     #     return set() 
 
 def populate_fileevents(file_list, sql_server, sql_db, sql_template_file_path, filename_pattern):
-
+    inserted = []
     for src_full_path, filename, formatted_date, _ in file_list:
         data_file_type_id = get_datafiletype_id_from_filename(filename, filename_pattern)
-        insert_fileevent(sql_server, sql_db, sql_template_file_path, 
-                         data_file_type_id, formatted_date, filename, src_full_path)
+        if data_file_type_id is None:
+            logger.warning(f"❓ Unknown file type for: {filename}")
+            continue
+
+        success = insert_fileevent(
+            sql_server,
+            sql_db,
+            sql_template_file_path,
+            data_file_type_id,
+            formatted_date,
+            filename,
+            src_full_path
+        )
+        if success:
+            inserted.append(filename)
+    return inserted
+
 
 def main(dataFileType_arg: str):
 
